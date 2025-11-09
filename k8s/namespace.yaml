@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secure-ity
+  labels:
+    name: secure-ity
+    app: secure-ity
+
