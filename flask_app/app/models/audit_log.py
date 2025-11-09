@@ -33,12 +33,16 @@ class AuditLog:
     severity: str = "info"
     timestamp: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    message: Optional[str] = None
+    event_metadata: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_record(cls, record: Dict[str, Any]) -> "AuditLog":
         """
         Create an AuditLog from a Supabase row (dict).
         """
+        event_metadata = record.get("event_metadata") or {}
+        metadata = record.get("metadata") or event_metadata or {}
         return cls(
             id=record.get("id"),
             user_id=record.get("user_id"),
@@ -52,9 +56,9 @@ class AuditLog:
             status=record.get("status", "success"),
             severity=record.get("severity", "info"),
             timestamp=_parse_timestamp(record.get("timestamp")),
-            metadata=record.get("metadata")
-            or record.get("event_metadata")
-            or {},
+            metadata=metadata,
+            message=record.get("message"),
+            event_metadata=event_metadata,
         )
 
     def to_payload(self) -> Dict[str, Any]:
@@ -73,6 +77,8 @@ class AuditLog:
             "status": self.status,
             "severity": self.severity,
             "metadata": self.metadata or None,
+            "event_metadata": self.event_metadata or None,
+            "message": self.message,
         }
         if self.timestamp:
             payload["timestamp"] = self.timestamp.isoformat()
