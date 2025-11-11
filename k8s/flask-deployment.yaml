@@ -37,11 +37,6 @@ spec:
             configMapKeyRef:
               name: secure-ity-config
               key: LOG_LEVEL
-        - name: REDIS_URL
-          valueFrom:
-            configMapKeyRef:
-              name: secure-ity-config
-              key: REDIS_URL
         - name: SECRET_KEY
           valueFrom:
             secretKeyRef:
@@ -62,11 +57,6 @@ spec:
             secretKeyRef:
               name: secure-ity-secrets
               key: DATABASE_URL
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: secure-ity-secrets
-              key: REDIS_PASSWORD
         - name: CORS_ORIGINS
           valueFrom:
             configMapKeyRef:

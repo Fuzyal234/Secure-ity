@@ -1,6 +1,5 @@
 import os
 from datetime import timedelta
-from sqlalchemy.pool import StaticPool
 
 def _prepare_database_url(url):
     """Prepare database URL with SSL for Supabase"""
@@ -21,53 +20,19 @@ class Config:
     """Base configuration class"""
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
     
-    # Supabase Database Configuration
-    # Supabase provides connection strings in format:
-    # postgresql://postgres:[PASSWORD]@[PROJECT_REF].supabase.co:5432/postgres
-    # For connection pooling (recommended): postgresql://postgres:[PASSWORD]@[PROJECT_REF].supabase.co:6543/postgres
-    # SQLAlchemy is kept primarily for testing; in production Supabase client is used directly.
-    # Fallback to in-memory SQLite when no DATABASE_URL is provided.
-    SQLALCHEMY_DATABASE_URI = _prepared_db_url or 'sqlite:///:memory:'
-    SQLALCHEMY_TRACK_MODIFICATIONS = False
-    
-    # Supabase connection pool settings
-    # Use connection pooling for better performance with Supabase
-    if _prepared_db_url and 'supabase.co' in _prepared_db_url:
-        SQLALCHEMY_ENGINE_OPTIONS = {
-            'pool_pre_ping': True,  # Verify connections before using
-            'pool_recycle': 300,    # Recycle connections after 5 minutes
-            'pool_size': 5,         # Reduced for Supabase connection limits
-            'max_overflow': 10,     # Additional connections beyond pool_size
-            'connect_args': {
-                'sslmode': 'require'  # Require SSL for Supabase
-            }
-        }
-    elif _prepared_db_url:
-        SQLALCHEMY_ENGINE_OPTIONS = {
-            'pool_pre_ping': True,
-            'pool_recycle': 300,
-            'pool_size': 10,
-            'max_overflow': 20
-        }
-    else:
-        # In-memory SQLite fallback for testing and local development without Supabase
-        SQLALCHEMY_ENGINE_OPTIONS = {
-            'connect_args': {'check_same_thread': False},
-            'poolclass': StaticPool
-        }
+    # Database
+    # This application uses Supabase (see app/db/supabase_client.py).
+    # No SQLAlchemy configuration is used in stateless mode.
     
     # JWT Configuration
     JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY') or SECRET_KEY
-    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)
-    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=5)
+    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=15)
     JWT_ALGORITHM = 'HS256'
     JWT_TOKEN_LOCATION = ['headers', 'cookies']
     JWT_COOKIE_SECURE = True
     JWT_COOKIE_HTTPONLY = True
     JWT_COOKIE_SAMESITE = 'Strict'
-    
-    # Redis Configuration
-    REDIS_URL = os.environ.get('REDIS_URL') or 'redis://redis:6379/0'
     
     # Encryption Configuration
     ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY') or None
@@ -82,9 +47,9 @@ class Config:
     PASSWORD_REQUIRE_NUMBERS = True
     PASSWORD_REQUIRE_SPECIAL = True
     
-    # Rate Limiting
+    # Rate Limiting (stateless default: in-memory)
     RATELIMIT_ENABLED = True
-    RATELIMIT_STORAGE_URL = REDIS_URL
+    RATELIMIT_STORAGE_URL = os.environ.get('RATELIMIT_STORAGE_URL', 'memory://')
     
     # Logging Configuration
     LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO')
@@ -118,12 +83,7 @@ class ProductionConfig(Config):
 class TestingConfig(Config):
     """Testing configuration"""
     TESTING = True
-    # Use in-memory SQLite for testing (bypass Supabase)
-    SQLALCHEMY_DATABASE_URI = os.environ.get('TEST_DATABASE_URL', 'sqlite:///:memory:')
-    REDIS_URL = 'redis://localhost:6379/1'
     LOG_LEVEL = 'DEBUG'
-    # Override database URL check for testing
-    DATABASE_URL = SQLALCHEMY_DATABASE_URI
 
 config = {
     'development': DevelopmentConfig,

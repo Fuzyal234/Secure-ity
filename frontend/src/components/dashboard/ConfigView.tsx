@@ -9,6 +9,13 @@ interface ConfigViewProps {
 }
 
 export default function ConfigView({ config, onClose }: ConfigViewProps) {
+  const hasDecrypted = config.data !== undefined && config.data !== null
+  const hasEncrypted =
+    !!config.encrypted_data &&
+    !!config.iv &&
+    !!config.encryption_algorithm &&
+    !!config.key_version
+
   return (
     <div className="mx-auto max-w-5xl space-y-8">
       <Button
@@ -25,7 +32,7 @@ export default function ConfigView({ config, onClose }: ConfigViewProps) {
           <CardHeader className="space-y-4 border-b border-slate-200/60 bg-white/60">
             <div className="inline-flex w-fit items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-primary">
               <Lock className="h-4 w-4" />
-              Decrypted view
+              {hasDecrypted ? 'Decrypted view' : hasEncrypted ? 'Encrypted view' : 'No payload'}
             </div>
             <div className="space-y-2">
               <CardTitle className="flex flex-wrap items-center gap-3 text-2xl text-slate-900">
@@ -58,24 +65,53 @@ export default function ConfigView({ config, onClose }: ConfigViewProps) {
               </span>
             </div>
 
-            <div className="space-y-3">
-              <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                <Lock className="h-4 w-4 text-primary" />
-                Decrypted configuration payload
-              </h3>
-              <div className="overflow-hidden rounded-3xl border border-slate-900/10 bg-slate-950 text-slate-50 shadow-inner">
-                <div className="flex items-center justify-between border-b border-white/10 px-5 py-3 text-xs uppercase tracking-[0.3em] text-white/60">
-                  <span>AES-256 GCM</span>
-                  <span>Decrypted on demand</span>
+            {hasDecrypted && (
+              <div className="space-y-3">
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                  <Lock className="h-4 w-4 text-primary" />
+                  Decrypted configuration payload
+                </h3>
+                <div className="overflow-hidden rounded-3xl border border-slate-900/10 bg-slate-950 text-slate-50 shadow-inner">
+                  <div className="flex items-center justify-between border-b border-white/10 px-5 py-3 text-xs uppercase tracking-[0.3em] text-white/60">
+                    <span>AES-256 GCM</span>
+                    <span>Decrypted on demand</span>
+                  </div>
+                  <pre className="max-h-96 overflow-auto bg-transparent px-6 py-5 text-sm text-emerald-100/95">
+                    {JSON.stringify(config.data, null, 2)}
+                  </pre>
                 </div>
-                <pre className="max-h-96 overflow-auto bg-transparent px-6 py-5 text-sm text-emerald-100/95">
-                  {JSON.stringify(config.data, null, 2)}
-                </pre>
+                <p className="text-xs text-slate-500">
+                  Rendered only for this session. We never persist decrypted payloads—refreshing the view will request a new decryption event.
+                </p>
               </div>
-              <p className="text-xs text-slate-500">
-                Rendered only for this session. We never persist decrypted payloads—refreshing the view will request a new decryption event.
-              </p>
-            </div>
+            )}
+
+            {!hasDecrypted && hasEncrypted && (
+              <div className="space-y-3">
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                  <Lock className="h-4 w-4 text-primary" />
+                  Encrypted configuration payload
+                </h3>
+                <div className="overflow-hidden rounded-3xl border border-slate-900/10 bg-slate-950 text-slate-50 shadow-inner">
+                  <div className="flex items-center justify-between border-b border-white/10 px-5 py-3 text-xs uppercase tracking-[0.3em] text-white/60">
+                    <span>{(config.encryption_algorithm || 'AES-256-GCM').toUpperCase()}</span>
+                    <span>Encrypted at rest</span>
+                  </div>
+                  <pre className="max-h-96 overflow-auto bg-transparent px-6 py-5 text-sm text-emerald-100/95">
+{JSON.stringify({
+  ciphertext: config.encrypted_data,
+  iv: config.iv,
+  algorithm: config.encryption_algorithm,
+  key_version: config.key_version,
+  data_hash: config.data_hash,
+}, null, 2)}
+                  </pre>
+                </div>
+                <p className="text-xs text-slate-500">
+                  As an administrator, you can view ciphertext and metadata for auditing. Plaintext is not shown unless you are the creator of this configuration.
+                </p>
+              </div>
+            )}
           </CardContent>
         </Card>
 

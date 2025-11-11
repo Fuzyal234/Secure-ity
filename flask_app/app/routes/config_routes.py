@@ -4,20 +4,15 @@ from datetime import datetime
 
 from app.db.supabase_client import get_supabase_client
 from app.services.rbac import has_permission, requires_any_permission, requires_permissions
-from app.services.session_manager import get_session_manager
 from app.utils.encryption import get_encryption_service
 from app.utils.logger import log_security_event
 from app.utils.validation import sanitize_input, validate_config_data
 
 config_bp = Blueprint('config', __name__)
-session_manager = get_session_manager()
 
 
 def _ensure_active_session(claims, user_id):
-    session_id = claims.get('session_id')
-    if not session_manager.ensure_active_session(session_id, user_id):
-        session_manager.revoke_session(session_id)
-        return False
+    # Stateless mode: always allow (session checks disabled)
     return True
 
 
@@ -28,8 +23,6 @@ def list_configs():
     try:
         user_id = get_jwt_identity()
         claims = get_jwt()
-        if not _ensure_active_session(claims, user_id):
-            return jsonify({'error': 'Session expired'}), 401
         is_admin = has_permission(claims.get('role'), 'config:read')
         username = claims.get('username')
         # Pagination
@@ -73,8 +66,6 @@ def get_config(config_id):
     try:
         user_id = get_jwt_identity()
         claims = get_jwt()
-        if not _ensure_active_session(claims, user_id):
-            return jsonify({'error': 'Session expired'}), 401
         is_admin = has_permission(claims.get('role'), 'config:read')
         username = claims.get('username')
 
@@ -90,28 +81,52 @@ def get_config(config_id):
             log_security_event('config_access', f'Unauthorized access attempt to config {config_id}', 'warning', 'failure', {'config_id': config_id}, user_id, username)
             return jsonify({'error': 'Unauthorized'}), 403
         encryption_service = get_encryption_service()
-        decrypted_data = encryption_service.decrypt(
-            cfg.get('encrypted_data'),
-            cfg.get('data_hash'),
-            cfg.get('iv'),
-            cfg.get('key_version'),
-            cfg.get('encryption_algorithm'),
-        )
-        result = {
-            'id': cfg.get('id'),
-            'user_id': cfg.get('user_id'),
-            'name': cfg.get('name'),
-            'description': cfg.get('description'),
-            'version': cfg.get('version'),
-            'created_at': cfg.get('created_at'),
-            'updated_at': cfg.get('updated_at'),
-            'created_by': cfg.get('created_by'),
-            'updated_by': cfg.get('updated_by'),
-            'is_deleted': cfg.get('is_deleted'),
-            'data': decrypted_data
-        }
-        log_security_event('config_read', f'Accessed configuration: {cfg.get("name")}', 'info', 'success', {'config_id': config_id}, user_id, username)
-        return jsonify(result), 200
+        is_owner = cfg.get('user_id') == user_id
+
+        if is_owner:
+            decrypted_data = encryption_service.decrypt(
+                cfg.get('encrypted_data'),
+                cfg.get('data_hash'),
+                cfg.get('iv'),
+                cfg.get('key_version'),
+                cfg.get('encryption_algorithm'),
+            )
+            result = {
+                'id': cfg.get('id'),
+                'user_id': cfg.get('user_id'),
+                'name': cfg.get('name'),
+                'description': cfg.get('description'),
+                'version': cfg.get('version'),
+                'created_at': cfg.get('created_at'),
+                'updated_at': cfg.get('updated_at'),
+                'created_by': cfg.get('created_by'),
+                'updated_by': cfg.get('updated_by'),
+                'is_deleted': cfg.get('is_deleted'),
+                'data': decrypted_data
+            }
+            log_security_event('config_read', f'Accessed configuration: {cfg.get("name")}', 'info', 'success', {'config_id': config_id, 'decrypted': True}, user_id, username)
+            return jsonify(result), 200
+        else:
+            # Admin (or privileged) non-owner: return encrypted payload only (no plaintext)
+            result = {
+                'id': cfg.get('id'),
+                'user_id': cfg.get('user_id'),
+                'name': cfg.get('name'),
+                'description': cfg.get('description'),
+                'version': cfg.get('version'),
+                'created_at': cfg.get('created_at'),
+                'updated_at': cfg.get('updated_at'),
+                'created_by': cfg.get('created_by'),
+                'updated_by': cfg.get('updated_by'),
+                'is_deleted': cfg.get('is_deleted'),
+                'encrypted_data': cfg.get('encrypted_data'),
+                'data_hash': cfg.get('data_hash'),
+                'iv': cfg.get('iv'),
+                'key_version': cfg.get('key_version'),
+                'encryption_algorithm': cfg.get('encryption_algorithm'),
+            }
+            log_security_event('config_read', f'Accessed configuration (encrypted only): {cfg.get("name")}', 'info', 'success', {'config_id': config_id, 'decrypted': False}, user_id, username)
+            return jsonify(result), 200
         
     except ValueError as e:
         return jsonify({'error': f'Decryption failed: {str(e)}'}), 500
@@ -126,8 +141,6 @@ def create_config():
     try:
         user_id = get_jwt_identity()
         claims = get_jwt()
-        if not _ensure_active_session(claims, user_id):
-            return jsonify({'error': 'Session expired'}), 401
         username = claims.get('username')
         # Permission decorator already ensures caller has write rights; optional for auditing
         has_permission(claims.get('role'), 'config:write')
@@ -203,8 +216,6 @@ def update_config(config_id):
     try:
         user_id = get_jwt_identity()
         claims = get_jwt()
-        if not _ensure_active_session(claims, user_id):
-            return jsonify({'error': 'Session expired'}), 401
         is_admin = has_permission(claims.get('role'), 'config:write')
         username = claims.get('username')
         
@@ -267,8 +278,6 @@ def delete_config(config_id):
     try:
         user_id = get_jwt_identity()
         claims = get_jwt()
-        if not _ensure_active_session(claims, user_id):
-            return jsonify({'error': 'Session expired'}), 401
         is_admin = has_permission(claims.get('role'), 'config:delete')
         username = claims.get('username')
         
@@ -301,8 +310,6 @@ def get_config_audit():
     try:
         user_id = get_jwt_identity()
         claims = get_jwt()
-        if not _ensure_active_session(claims, user_id):
-            return jsonify({'error': 'Session expired'}), 401
         
         from app.services.security_audit import SecurityAuditService
         

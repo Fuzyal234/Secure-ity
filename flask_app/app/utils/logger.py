@@ -4,6 +4,13 @@ import os
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+# Access request context safely to enrich audit logs when available.
+try:
+    from flask import has_request_context, request  # type: ignore
+except Exception:  # pragma: no cover - flask not available in some contexts
+    has_request_context = lambda: False  # type: ignore
+    request = None  # type: ignore
+
 try:
     from app.db.supabase_client import get_supabase_client
 except Exception:
@@ -73,6 +80,50 @@ def setup_logging(app=None) -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
+def _extract_client_info() -> Dict[str, Optional[str]]:
+    """
+    Derive client networking details from the current request, if any.
+    Honors common proxy headers set by nginx / load balancers.
+    """
+    if not has_request_context() or request is None:
+        return {"ip_address": None, "user_agent": None}
+
+    # Prefer X-Forwarded-For (left-most original client IP), then X-Real-IP, then remote_addr
+    xff = request.headers.get("X-Forwarded-For", "") or ""
+    ip_from_xff = xff.split(",")[0].strip() if xff else None
+    ip_real = request.headers.get("X-Real-IP")
+    ip_addr = ip_from_xff or ip_real or getattr(request, "remote_addr", None)
+
+    ua = request.headers.get("User-Agent")
+    return {"ip_address": ip_addr, "user_agent": ua}
+
+
+def _infer_resource_fields(
+    event_type: str,
+    masked_meta: Dict[str, Any],
+    user_id: Optional[int],
+) -> Dict[str, Optional[Any]]:
+    """
+    Provide best-effort defaults for resource classification so existing callers
+    do not need to be changed. Prefer explicit IDs from metadata.
+    """
+    resource_type: Optional[str] = None
+    resource_id: Optional[Any] = None
+
+    # Config operations commonly include config_id in metadata
+    if "config_id" in masked_meta:
+        resource_type = "config"
+        resource_id = masked_meta.get("config_id")
+    elif event_type.startswith("config_"):
+        resource_type = "config"
+        resource_id = masked_meta.get("id") or masked_meta.get("config")  # fallback keys
+    elif event_type in {"login", "logout", "register"}:
+        resource_type = "user"
+        resource_id = user_id
+
+    return {"resource_type": resource_type, "resource_id": resource_id}
+
+
 def log_security_event(
     event_type: str,
     message: str,
@@ -92,6 +143,7 @@ def log_security_event(
     severity_normalized = (severity or "info").lower()
     status_normalized = (status or "success").lower()
 
+    client_info = _extract_client_info()
     log_payload = {
         "event_type": event_type,
         "message": message,
@@ -101,6 +153,8 @@ def log_security_event(
         "user_id": user_id,
         "username": username,
         "metadata": masked_meta,
+        "ip_address": client_info.get("ip_address"),
+        "user_agent": client_info.get("user_agent"),
     }
 
     log_method = {
@@ -122,6 +176,8 @@ def log_security_event(
 
     try:
         client = get_supabase_client()
+        resource_fields = _infer_resource_fields(event_type, masked_meta, user_id)
+        client_info = _extract_client_info()
         payload = {
             "timestamp": datetime.utcnow().isoformat(),
             "event_type": event_type,
@@ -133,6 +189,10 @@ def log_security_event(
             "username": username,
             "metadata": masked_meta,
             "event_metadata": masked_meta,
+            "ip_address": client_info.get("ip_address"),
+            "user_agent": client_info.get("user_agent"),
+            "resource_type": resource_fields.get("resource_type"),
+            "resource_id": resource_fields.get("resource_id"),
         }
         client.table("audit_logs").insert(payload).execute()
     except Exception:

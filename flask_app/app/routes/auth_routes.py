@@ -10,16 +10,10 @@ from datetime import datetime, timedelta
 import bcrypt
 
 from app.db.supabase_client import get_supabase_client
-from app.services.redis_client import get_redis_client
-from app.services.session_manager import (
-    SessionInfo,
-    get_session_manager,
-)
 from app.utils.logger import log_security_event
 from app.utils.validation import validate_password
 
 auth_bp = Blueprint('auth', __name__)
-session_manager = get_session_manager()
 
 @auth_bp.route('/register', methods=['POST'])
 def register():
@@ -130,10 +124,23 @@ def login():
             failed = (user.get('failed_login_attempts') or 0) + 1
             update = {'failed_login_attempts': failed}
             if failed >= 5:
-                lock_until = (datetime.utcnow() + timedelta(minutes=30)).isoformat()
+                # Lock account for 30 minutes
+                lock_until = (datetime.utcnow() + timedelta(minutes=30)).isoformat() + "Z"
                 update['locked_until'] = lock_until
-            client.table('users').update(update).eq('id', user_id).execute()
-            log_security_event('login', f'Failed login attempt: {username}', 'warning', 'failure', {'failed_attempts': failed}, user_id, username)
+            # Request the updated columns back so we can catch issues immediately
+            upd_resp = client.table('users').update(update).eq('id', user_id).select('failed_login_attempts,locked_until').execute()
+            # If Supabase returned an error or the value did not persist, log it for visibility
+            persisted_failed = None
+            try:
+                recs = getattr(upd_resp, 'data', []) or []
+                if recs:
+                    persisted_failed = recs[0].get('failed_login_attempts')
+            except Exception:
+                persisted_failed = None
+            meta = {'failed_attempts': failed, 'persisted_failed_attempts': persisted_failed}
+            if getattr(upd_resp, 'error', None):
+                meta['update_error'] = str(upd_resp.error)
+            log_security_event('login', f'Failed login attempt: {username}', 'warning', 'failure', meta, user_id, username)
             return jsonify({'error': 'Invalid credentials'}), 401
         # Success
         client.table('users').update({
@@ -142,16 +149,9 @@ def login():
             'last_login': datetime.utcnow().isoformat()
         }).eq('id', user_id).execute()
 
-        session_info: SessionInfo = session_manager.create_session(
-            user_id=user_id,
-            username=user.get('username'),
-            request=request,
-        )
-
         additional_claims = {
             'role': user.get('role'),
             'username': user.get('username'),
-            'session_id': session_info.session_id,
         }
         access_token = create_access_token(identity=user_id, additional_claims=additional_claims)
         refresh_token = create_refresh_token(identity=user_id, additional_claims=additional_claims)
@@ -169,13 +169,6 @@ def login():
                 'created_at': user.get('created_at'),
                 'last_login': user.get('last_login')
             },
-            'session': {
-                'id': session_info.session_id,
-                'created_at': session_info.created_at,
-                'last_seen_at': session_info.last_seen_at,
-                'ip_address': session_info.ip_address,
-                'user_agent': session_info.user_agent,
-            },
         })
         return response, 200
         
@@ -188,18 +181,9 @@ def login():
 def logout():
     """Logout and blacklist token"""
     try:
-        jti = get_jwt()['jti']  # JWT ID
+        # Stateless: nothing to revoke server-side
         user_id = get_jwt_identity()
-        claims = get_jwt()
-        session_id = claims.get('session_id')
-        if session_id:
-            session_manager.revoke_session(session_id)
-        # Add token to blacklist (expire in 1 hour)
-        redis_client = get_redis_client()
-        redis_client.setex(f"blacklist:{jti}", 3600, "true")
-        
         log_security_event('logout', f'User logged out', 'info', 'success', {}, user_id, None)
-        
         return jsonify({'message': 'Logged out successfully'}), 200
         
     except Exception as e:
@@ -212,19 +196,13 @@ def refresh():
     """Refresh access token"""
     try:
         user_id = get_jwt_identity()
-        claims = get_jwt()
-        session_id = claims.get('session_id')
-        if not session_manager.ensure_active_session(session_id, user_id):
-            session_manager.revoke_session(session_id)
-            return jsonify({'error': 'Session expired'}), 401
         client = get_supabase_client()
         resp = client.table('users').select('id, role, username, is_active').eq('id', user_id).limit(1).execute()
         recs = getattr(resp, 'data', []) or []
         if not recs or not recs[0].get('is_active', True):
             return jsonify({'error': 'User not found or inactive'}), 401
         u = recs[0]
-        additional_claims = {'role': u.get('role'), 'username': u.get('username'), 'session_id': session_id}
-        session_manager.touch_session(session_id)
+        additional_claims = {'role': u.get('role'), 'username': u.get('username')}
         access_token = create_access_token(identity=user_id, additional_claims=additional_claims)
         return jsonify({'access_token': access_token}), 200
         
@@ -237,11 +215,6 @@ def get_current_user():
     """Get current user information"""
     try:
         user_id = get_jwt_identity()
-        claims = get_jwt()
-        session_id = claims.get('session_id')
-        if not session_manager.ensure_active_session(session_id, user_id):
-            session_manager.revoke_session(session_id)
-            return jsonify({'error': 'Session expired'}), 401
         client = get_supabase_client()
         resp = client.table('users').select('id, username, email, role, is_active, created_at, last_login').eq('id', user_id).limit(1).execute()
         recs = getattr(resp, 'data', []) or []

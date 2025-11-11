@@ -55,6 +55,8 @@ export default function Login({ onLogin }: LoginProps) {
     try {
       const response = await api.login(username, password)
       api.setTokens(response.access_token, response.refresh_token)
+      // Helpful console for session debugging
+      console.info('[Auth] Login session info', response.session || '(no session)')
       onLogin(response.user)
       toast({
         title: 'Success',

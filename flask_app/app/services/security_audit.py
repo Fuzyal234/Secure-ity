@@ -7,7 +7,7 @@ class SecurityAuditService:
     @staticmethod
     def get_recent_events(event_type=None, user_id=None, hours=24, limit=100):
         """Get recent audit events"""
-        cutoff_time = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        cutoff_time = (datetime.utcnow() - timedelta(hours=hours)).isoformat() + "Z"
         client = get_supabase_client()
         q = client.table('audit_logs').select('*').gte('timestamp', cutoff_time).order('timestamp', desc=True)
         if event_type:
@@ -20,9 +20,16 @@ class SecurityAuditService:
     @staticmethod
     def get_failed_login_attempts(username=None, hours=24):
         """Get failed login attempts"""
-        cutoff_time = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        cutoff_time = (datetime.utcnow() - timedelta(hours=hours)).isoformat() + "Z"
         client = get_supabase_client()
-        q = client.table('audit_logs').select('id', count='exact').eq('event_type', 'login').eq('status', 'failure').gte('timestamp', cutoff_time)
+        # Supabase returns count reliably when head=True is used.
+        q = (
+            client.table('audit_logs')
+            .select('id', count='exact', head=True)
+            .eq('event_type', 'login')
+            .eq('status', 'failure')
+            .gte('timestamp', cutoff_time)
+        )
         if username:
             q = q.eq('username', username)
         resp = q.execute()
@@ -31,7 +38,7 @@ class SecurityAuditService:
     @staticmethod
     def get_config_changes(config_id=None, hours=24):
         """Get configuration data changes"""
-        cutoff_time = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        cutoff_time = (datetime.utcnow() - timedelta(hours=hours)).isoformat() + "Z"
         client = get_supabase_client()
         q = client.table('audit_logs').select('*').in_('event_type', ['config_create', 'config_update', 'config_delete']).gte('timestamp', cutoff_time).order('timestamp', desc=True)
         if config_id:
@@ -42,10 +49,10 @@ class SecurityAuditService:
     @staticmethod
     def generate_security_report(hours=24):
         """Generate security report for compliance"""
-        cutoff_time = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        cutoff_time = (datetime.utcnow() - timedelta(hours=hours)).isoformat() + "Z"
         client = get_supabase_client()
         def count_query(filters):
-            q = client.table('audit_logs').select('id', count='exact').gte('timestamp', cutoff_time)
+            q = client.table('audit_logs').select('id', count='exact', head=True).gte('timestamp', cutoff_time)
             for key, value in filters.items():
                 if key == 'event_type_in':
                     q = q.in_('event_type', value)

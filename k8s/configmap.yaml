@@ -6,8 +6,6 @@ metadata:
 data:
   ENV: "production"
   LOG_LEVEL: "INFO"
-  # Redis URL (will be overridden by service name)
-  REDIS_URL: "redis://secure-ity-redis:6379/0"
   # CORS origins (configure as needed)
   CORS_ORIGINS: ""
 
