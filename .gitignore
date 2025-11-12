@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+certs/
+nginx/certs/
+nginx/logs/
 # C extensions
 *.so
 
