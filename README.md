@@ -1,319 +1,260 @@
 # Secure-ity: Secure Configuration Management System
 
-A secure browser-based application for collecting and storing sensitive configuration data, compliant with DoD STIG and NIST 800-52 security standards.
+A secure, end‑to‑end system for collecting and storing sensitive configuration data. The stack is hardened to align with DoD STIG and NIST 800‑52r2 guidance.
 
-## 🏗️ Architecture
-
-```
-Browser UI → Nginx (TLS 1.2+) → Flask Backend → PostgreSQL/Redis
-```
-
-## 🔐 Security Features
-
-- **Transport Security**: TLS 1.2+ with NIST 800-52r2 compliant cipher suites
-- **Data Encryption**: AES-256 encryption at rest using Fernet
-- **Authentication**: JWT-based authentication with refresh tokens
-- **Authorization**: Role-based access control (RBAC)
-- **Password Security**: Bcrypt hashing with strength requirements
-- **Audit Logging**: Comprehensive STIG-compliant audit logs
-- **Rate Limiting**: Protection against brute force attacks
-- **Security Headers**: HSTS, CSP, X-Frame-Options, etc.
-
-## 📋 Prerequisites
-
-- Docker and Docker Compose
-- OpenSSL (for certificate generation)
-- Python 3.11+ (for local development)
-
-## 🚀 Quick Start
-
-### 1. Configure Certificates (for production)
-
-Place your CA-signed TLS certificate and key in the `certs/` directory:
+## Architecture and Data Flow
 
 ```
-certs/server.crt   # public certificate chain
-certs/server.key   # private key
+Browser (React SPA)
+    │  HTTPS (TLS 1.2/1.3)
+    ▼
+Nginx (Ingress / Reverse Proxy)
+    │  Reverse proxy to backend + security headers + rate limits
+    ▼
+Flask Backend (API)
+    │  Encrypts config data (AES‑256‑GCM)
+    ▼
+Supabase (PostgreSQL)
+    Encrypted payload stored at rest
 ```
 
-They are mounted read-only into the Nginx container at `/etc/nginx/certs`.
-For local development you can leave the files absent—the container will fall back to
-a self-signed certificate (you may need to trust it in your browser or disable SSL verification).
+Key properties:
+- Transport security at the edge (TLS 1.2/1.3, strong ciphers, HSTS, CSP)
+- Application‑level encryption of configuration data before persistence (AES‑256‑GCM)
+- JWT auth + RBAC for access control
+- Structured audit logging with masking for sensitive metadata
+- Defense‑in‑depth rate limiting (Nginx + application)
 
-### 2. Configure Environment Variables
+## Security Model
 
+- Transport security:
+  - `nginx/nginx.conf` enforces HTTPS, TLSv1.2/1.3, approved cipher suites, HSTS, CSP, and common hardening headers.
+  - Reverse proxy forwards only required headers to the backend.
+- Authentication/Authorization:
+  - JWT access/refresh tokens (`HS256` by default), short‑lived access tokens.
+  - Role‑based access control (RBAC) decorators gate endpoints by permission.
+- Encryption at rest:
+  - `app/utils/encryption.py` implements AES‑256‑GCM via `EncryptionService`.
+  - Keys are provided by `app/services/key_management.py`:
+    - Env provider: `KMS_DATA_KEY` or `ENCRYPTION_KEY` (base64, 32‑byte decoded).
+    - Vault provider (optional): `VAULT_ADDR`, `VAULT_TOKEN`, `VAULT_SECRET_PATH`.
+  - Legacy Fernet decryption is supported for backwards compatibility when needed.
+- Audit logging:
+  - `app/utils/logger.py` emits structured JSON logs and persists to Supabase `audit_logs`.
+  - Automatic masking of common secret fields in metadata.
+- Rate limiting:
+  - Nginx global burst/rate rules.
+  - Application rate limiting via `app/extensions.py` (in‑memory fallback).
+
+## Backend: Files and Responsibilities
+
+- `flask_app/app/__init__.py`
+  - Flask application factory, CORS, JWT + limiter initialization, security headers middleware.
+  - Registers blueprints:
+    - `auth_bp` → `/api/auth`
+    - `config_bp` → `/api/config`
+    - `health_bp` → `/health`
+- `flask_app/app/config.py`
+  - Central configuration (JWT settings, logging, CORS).
+  - Enforces presence of `ENCRYPTION_KEY` (or KMS) and ensures TLS for Supabase URLs.
+- `flask_app/app/routes/auth_routes.py`
+  - `POST /api/auth/register` — Create user (bcrypt password hash, password policy).
+  - `POST /api/auth/login` — Issue access/refresh tokens, account lockout after failed attempts.
+  - `POST /api/auth/logout` — Stateless logout (audit only).
+  - `POST /api/auth/refresh` — Refresh access token using refresh token.
+  - `GET /api/auth/me` — Current user profile.
+- `flask_app/app/routes/config_routes.py`
+  - `GET /api/config` — List configurations (admin: all, user: own).
+  - `GET /api/config/<id>` — Get a configuration; owners receive decrypted `data`, others get encrypted payload metadata only.
+  - `POST /api/config` — Create configuration: validates input, encrypts payload, persists ciphertext + metadata.
+  - `PUT /api/config/<id>` — Update configuration: re‑encrypts data, bumps version.
+  - `DELETE /api/config/<id>` — Soft delete.
+  - `GET /api/config/audit` — Audit events (admin only).
+- `flask_app/app/routes/health_routes.py`
+  - `GET /health` — App/Supabase health.
+- `flask_app/app/services/rbac.py`
+  - `requires_permissions`, `requires_any_permission` decorators.
+  - Role permission map and helpers (`has_permission`).
+- `flask_app/app/services/key_management.py`
+  - `KeyManagementService` facade.
+  - Providers: `_EnvKeyProvider` (env), `_VaultKeyProvider` (HashiCorp Vault KV v2).
+  - Caching of active keys with TTL.
+- `flask_app/app/utils/encryption.py`
+  - `EncryptionService.encrypt(data)` → `EncryptedPayload(ciphertext, data_hash, iv, key_version, algorithm="AES-256-GCM")`.
+  - `EncryptionService.decrypt(ciphertext, expected_hash, iv, key_version, algorithm)` → `dict` data; integrity checked via SHA‑256 hash; legacy Fernet fallback supported.
+  - `get_encryption_service()` singleton accessor.
+- `flask_app/app/utils/logger.py`
+  - `setup_logging()` structured JSON logs.
+  - `log_security_event(event_type, message, severity, status, metadata, user_id, username)` logs and persists to Supabase `audit_logs` with masking and client IP/user‑agent enrichment.
+- `flask_app/app/db/supabase_client.py`
+  - Creates a cached Supabase client from `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_ANON_KEY`).
+
+## Frontend: Files and Responsibilities
+
+- `frontend/src/lib/api.ts`
+  - Thin API client for the SPA.
+  - Persists access/refresh tokens in localStorage; auto‑refreshes on 401 and retries original request.
+  - Methods:
+    - Auth: `login`, `register`, `logoutApi`, `getCurrentUser`
+    - Config: `getConfigs`, `getConfig`, `createConfig`, `updateConfig`, `deleteConfig`
+- UI lives under `frontend/src/components` with pages for auth and dashboard configuration CRUD.
+
+## API Surface (Summary)
+
+- Auth
+  - `POST /api/auth/register`
+  - `POST /api/auth/login`
+  - `POST /api/auth/logout`
+  - `POST /api/auth/refresh`
+  - `GET /api/auth/me`
+- Config
+  - `GET /api/config`
+  - `GET /api/config/<id>`
+  - `POST /api/config`
+  - `PUT /api/config/<id>`
+  - `DELETE /api/config/<id>`
+  - `GET /api/config/audit`
+- Health
+  - `GET /health`
+
+## Encryption and Key Management (Detailed)
+
+- Algorithm: AES‑256‑GCM (authenticated encryption).
+- Envelope:
+  - `encrypted_data`: base64url ciphertext
+  - `iv`: base64url 12‑byte nonce
+  - `data_hash`: SHA‑256 of plaintext JSON for integrity checks
+  - `key_version`: version string returned by KMS provider
+  - `encryption_algorithm`: `"AES-256-GCM"`
+- Key sourcing:
+  - Env provider (default): `KMS_DATA_KEY` or `ENCRYPTION_KEY` must be base64url and decode to 32 bytes; `KMS_KEY_VERSION` optional.
+  - Vault provider: set `KMS_PROVIDER=vault` and configure `VAULT_ADDR`, `VAULT_TOKEN`, `VAULT_SECRET_PATH` (KV v2 supported). Fields: `key` (base64), optional `version`.
+- Backwards compatibility:
+  - Legacy Fernet decryption is supported when `iv`/`algorithm` are not provided; requires `ENCRYPTION_KEY`.
+
+## Nginx (Ingress) Overview
+
+- `nginx/nginx.conf`:
+  - Redirects HTTP→HTTPS.
+  - TLSv1.2/1.3 only; strong cipher suites; HSTS; CSP; X‑Frame‑Options; X‑Content‑Type‑Options; X‑XSS‑Protection.
+  - Reverse proxies:
+    - `/api/*` → Flask backend (`backend:5000` in Compose network).
+    - `/health` and default `/` path forwarded accordingly.
+  - Global request rate limiting with `limit_req_zone`.
+  - Mount certs via `nginx/certs` (do not commit private keys).
+
+## Environment Variables
+
+Minimum required to start:
+- Core
+  - `SECRET_KEY` — Flask secret
+  - `JWT_SECRET_KEY` — JWT signing secret (HS256)
+  - `CORS_ORIGINS` — Comma‑separated list or leave empty for permissive dev CORS
+- Supabase
+  - `SUPABASE_URL`
+  - `SUPABASE_SERVICE_ROLE_KEY` (preferred) or `SUPABASE_ANON_KEY`
+- Encryption/KMS (pick one path)
+  - Env provider (default): `KMS_DATA_KEY` or `ENCRYPTION_KEY` (base64url for 32‑byte key), optional `KMS_KEY_VERSION`
+  - Vault provider: `KMS_PROVIDER=vault`, plus `VAULT_ADDR`, `VAULT_TOKEN`, `VAULT_SECRET_PATH`, optional `VAULT_KEY_FIELD`, `VAULT_KEY_VERSION_FIELD`
+- Optional
+  - `LOG_LEVEL` (default INFO)
+  - `RATELIMIT_STORAGE_URL` (fallback to in‑memory if not set)
+
+See `env.example` for a starting template.
+
+## Run with Docker
+
+1) Copy env and fill values:
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set:
-- `SECRET_KEY`: Random secret key for Flask
-- `JWT_SECRET_KEY`: Random secret key for JWT tokens
-- `ENCRYPTION_KEY`: Generate using:
-  ```python
-  from cryptography.fernet import Fernet
-  print(Fernet.generate_key().decode())
-  ```
-- `DB_PASSWORD`: Strong database password
-- `REDIS_PASSWORD`: Strong Redis password
-
-### 3. Start Services
-
+2) Start stack:
 ```bash
 docker compose up --build -d
 ```
 
-The Nginx container automatically generates a self-signed certificate for `localhost`
-if none is provided. For production, mount CA-issued certs at `/etc/nginx/certs/server.crt`
-and `/etc/nginx/certs/server.key`.
+3) Access:
+- App/API via Nginx: `https://localhost/`
+- Health: `https://localhost/health`
 
-### 4. Access the Application
+Certificates:
+- Mount your certs into `nginx/certs/` as `cert.pem` and `key.pem` (Compose already mounts this path). Do not commit keys.
 
-- **App + API via Nginx**: https://localhost/
-- **API Documentation**: See API endpoints below
-
-### 5. Default Admin User
-
-- **Username**: `admin`
-- **Password**: `ChangeMe123!@#`
-
-**⚠️ IMPORTANT**: Change the default admin password immediately after first login!
-
-## 📡 API Endpoints
-
-### Authentication
-
-- `POST /api/auth/register` - Register new user
-- `POST /api/auth/login` - Login and get JWT tokens
-- `POST /api/auth/logout` - Logout (blacklist token)
-- `POST /api/auth/refresh` - Refresh access token
-- `GET /api/auth/me` - Get current user info
-
-### Configuration Management
-
-- `GET /api/config` - List configurations (paginated)
-- `GET /api/config/<id>` - Get specific configuration
-- `POST /api/config` - Create new configuration
-- `PUT /api/config/<id>` - Update configuration
-- `DELETE /api/config/<id>` - Delete configuration (soft delete)
-- `GET /api/config/audit` - Get audit log (admin only)
-
-### Health Check
-
-- `GET /health` - Health check endpoint
-
-## 🔒 Security Configuration
-
-### TLS Configuration
-
-Nginx is configured with:
-- TLS 1.2 and TLS 1.3 only
-- Strong cipher suites per NIST 800-52r2
-- HSTS headers
-- OCSP stapling
-
-### Password Requirements
-
-- Minimum 12 characters
-- At least one uppercase letter
-- At least one lowercase letter
-- At least one number
-- At least one special character
-- Not a common password
-
-### Rate Limiting
-
-- API endpoints: 10 requests/second
-- Login endpoint: 5 requests/minute
-- Account lockout after 5 failed login attempts (30 minutes)
-
-## 🧪 Testing
-
-Run the test suite:
+## Local Development (Backend)
 
 ```bash
 cd flask_app
-python -m pytest ../tests/ -v
-```
-
-Or run specific test files:
-
-```bash
-python -m pytest ../tests/test_security.py -v
-python -m pytest ../tests/test_routes.py -v
-python -m pytest ../tests/test_logging.py -v
-```
-
-## 📊 Audit Logging
-
-All security events are logged to:
-1. **Database**: `audit_logs` table
-2. **Application Logs**: `/app/logs/app.log`
-
-Event types include:
-- Authentication events (login, logout, registration)
-- Configuration changes (create, update, delete)
-- Access attempts (successful and failed)
-- Security violations
-
-## 🔍 Security Scanning
-
-### Scan Docker Images
-
-```bash
-# Scan Flask app
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  aquasec/trivy image secure-ity-flask_app:latest
-
-# Scan Nginx
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  aquasec/trivy image nginx:alpine
-```
-
-### Scan Python Code
-
-```bash
-cd flask_app
-pip install bandit
-bandit -r app/
-```
-
-### SSL/TLS Testing
-
-```bash
-# Test TLS configuration
-openssl s_client -connect localhost:443 -tls1_2
-```
-
-## 📁 Project Structure
-
-```
-project-root/
-├── docker-compose.yml          # Docker orchestration
-├── nginx/
-│   ├── nginx.conf              # Nginx configuration
-│   ├── certs/                  # SSL certificates (auto-generated in dev)
-│   └── entrypoint.sh           # Self-signed certificate helper
-├── flask_app/
-│   ├── Dockerfile              # Flask app container
-│   ├── requirements.txt        # Python dependencies
-│   ├── config.py              # Application configuration
-│   ├── wsgi.py                # WSGI entry point
-│   └── app/
-│       ├── __init__.py        # Application factory
-│       ├── routes/            # API routes
-│       ├── models/            # Database models
-│       ├── utils/             # Utilities (encryption, logging)
-│       └── services/          # Business logic services
-└── tests/                     # Test suite
-```
-
-## 🛠️ Development
-
-### Local Development Setup
-
-1. Create virtual environment:
-```bash
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-2. Install dependencies:
-```bash
-cd flask_app
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-```
 
-3. Set environment variables:
-```bash
-export ENCRYPTION_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-export SECRET_KEY="your-secret-key"
-export JWT_SECRET_KEY="your-jwt-secret-key"
-export DATABASE_URL="postgresql://user:pass@localhost:5432/dbname"
-```
+# required env (example)
+export SECRET_KEY=dev-secret
+export JWT_SECRET_KEY=dev-jwt-secret
+export SUPABASE_URL="https://<your-project>.supabase.co"
+export SUPABASE_SERVICE_ROLE_KEY="<service-role-key>"
+export KMS_DATA_KEY="$(python - <<'PY'\nimport base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())\nPY)"
 
-4. Run application:
-```bash
 python wsgi.py
 ```
 
-## 📝 Compliance
+Backend will be available at `http://127.0.0.1:5000` (use Nginx for TLS in front if needed).
 
-### DoD STIG Compliance
+## Project Structure
 
-- ✅ Application Security STIG
-- ✅ Web Server STIG (Nginx)
-- ✅ Database Security STIG (PostgreSQL)
-
-### NIST 800-52r2 Compliance
-
-- ✅ TLS 1.2+ only
-- ✅ Approved cipher suites
-- ✅ Certificate validation
-- ✅ HSTS implementation
-
-## ⚠️ Production Checklist
-
-Before deploying to production:
-
-- [ ] Replace self-signed certificates with CA-signed certificates
-- [ ] Change all default passwords
-- [ ] Set strong encryption keys
-- [ ] Configure proper CORS origins
-- [ ] Enable and configure log rotation
-- [ ] Set up monitoring and alerting
-- [ ] Perform security scanning (Trivy, Bandit)
-- [ ] Review and update security headers
-- [ ] Configure backup strategy
-- [ ] Set up SSL certificate auto-renewal
-- [ ] Review firewall rules
-- [ ] Document operational procedures
-
-## 🐛 Troubleshooting
-
-### Container won't start
-
-Check logs:
-```bash
-docker-compose logs flask_app
-docker-compose logs nginx
+```
+.
+├── docker-compose.yml
+├── nginx/
+│   ├── nginx.conf
+│   ├── certs/                  # TLS materials (not committed)
+│   └── logs/                   # Nginx logs (not committed)
+├── flask_app/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── wsgi.py
+│   └── app/
+│       ├── __init__.py         # app factory, CORS, JWT, limiter, headers
+│       ├── config.py           # runtime configuration, JWT, logging, CORS
+│       ├── extensions.py       # JWT, limiter setup and callbacks
+│       ├── routes/
+│       │   ├── auth_routes.py
+│       │   ├── config_routes.py
+│       │   └── health_routes.py
+│       ├── services/
+│       │   ├── key_management.py
+│       │   ├── rbac.py
+│       │   └── security_audit.py
+│       ├── utils/
+│       │   ├── encryption.py
+│       │   ├── logger.py
+│       │   └── validation.py
+│       └── db/
+│           └── supabase_client.py
+└── frontend/
+    └── src/
+        └── lib/
+            └── api.ts          # frontend API client (token mgmt + refresh)
 ```
 
-### Database connection errors
+## Production Checklist
 
-Verify database is running:
-```bash
-docker-compose ps postgres
-```
+- Replace any self‑signed certificates with CA‑issued certs (mounted into `nginx/certs`).
+- Set strong secrets and keys (`SECRET_KEY`, `JWT_SECRET_KEY`, KMS key).
+- Configure `CORS_ORIGINS` appropriately.
+- Ensure Vault configuration if using `KMS_PROVIDER=vault`.
+- Turn on structured log collection/rotation and monitoring.
+- Review Nginx security headers and CSP for your frontend assets.
+- Backup strategy for Supabase data and audit logs.
 
-### Certificate errors
+## Contributing and Security
 
-Regenerate certificates:
-```bash
-cd nginx
-./generate_certs.sh
-```
+- Never commit secrets, private keys, or generated certs (`nginx/certs/`, `nginx/logs/` should be git‑ignored).
+- Changes that affect authentication, encryption, or RBAC should include a brief rationale in PR description and updated docs.
+- File a confidential ticket in your organization’s process for any suspected security issues.
 
-### Redis connection errors
+## License
 
-Check Redis:
-```bash
-docker-compose exec redis redis-cli ping
-```
-
-## 📄 License
-
-This project is designed for secure configuration management. Ensure compliance with your organization's security policies.
-
-## 🤝 Contributing
-
-When contributing, ensure:
-- All security tests pass
-- Code follows security best practices
-- Documentation is updated
-- No sensitive data is committed
-
-## 📞 Support
-
-For security issues, please follow your organization's security incident reporting procedures.
+This project is provided for secure configuration management use cases. Ensure compliance with your organization’s security and data handling policies.
 
