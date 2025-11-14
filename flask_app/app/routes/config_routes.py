@@ -21,7 +21,7 @@ def _ensure_active_session(claims, user_id):
 def list_configs():
     """List all configuration data for current user (admin sees all)"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         claims = get_jwt()
         is_admin = has_permission(claims.get('role'), 'config:read')
         username = claims.get('username')
@@ -64,7 +64,7 @@ def list_configs():
 def get_config(config_id):
     """Get specific configuration data"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         claims = get_jwt()
         is_admin = has_permission(claims.get('role'), 'config:read')
         username = claims.get('username')
@@ -139,7 +139,7 @@ def get_config(config_id):
 def create_config():
     """Create new configuration data"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         claims = get_jwt()
         username = claims.get('username')
         # Permission decorator already ensures caller has write rights; optional for auditing
@@ -214,7 +214,7 @@ def create_config():
 def update_config(config_id):
     """Update configuration data"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         claims = get_jwt()
         is_admin = has_permission(claims.get('role'), 'config:write')
         username = claims.get('username')
@@ -276,7 +276,7 @@ def update_config(config_id):
 def delete_config(config_id):
     """Soft delete configuration data"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         claims = get_jwt()
         is_admin = has_permission(claims.get('role'), 'config:delete')
         username = claims.get('username')
@@ -308,7 +308,7 @@ def delete_config(config_id):
 def get_config_audit():
     """Get audit log for configuration changes (admin only)"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         claims = get_jwt()
         
         from app.services.security_audit import SecurityAuditService

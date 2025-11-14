@@ -152,8 +152,8 @@ def login():
             'role': user.get('role'),
             'username': user.get('username'),
         }
-        access_token = create_access_token(identity=user_id, additional_claims=additional_claims)
-        refresh_token = create_refresh_token(identity=user_id, additional_claims=additional_claims)
+        access_token = create_access_token(identity=str(user_id), additional_claims=additional_claims)
+        refresh_token = create_refresh_token(identity=str(user_id), additional_claims=additional_claims)
         log_security_event('login', f'Successful login: {username}', 'info', 'success', {'role': user.get('role')}, user_id, username)
         response = jsonify({
             'message': 'Login successful',
@@ -181,7 +181,7 @@ def logout():
     """Logout and blacklist token"""
     try:
         # Stateless: nothing to revoke server-side
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         log_security_event('logout', f'User logged out', 'info', 'success', {}, user_id, None)
         return jsonify({'message': 'Logged out successfully'}), 200
         
@@ -194,7 +194,7 @@ def logout():
 def refresh():
     """Refresh access token"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         client = get_supabase_client()
         resp = client.table('users').select('id, role, username, is_active').eq('id', user_id).limit(1).execute()
         recs = getattr(resp, 'data', []) or []
@@ -202,7 +202,7 @@ def refresh():
             return jsonify({'error': 'User not found or inactive'}), 401
         u = recs[0]
         additional_claims = {'role': u.get('role'), 'username': u.get('username')}
-        access_token = create_access_token(identity=user_id, additional_claims=additional_claims)
+        access_token = create_access_token(identity=str(user_id), additional_claims=additional_claims)
         return jsonify({'access_token': access_token}), 200
         
     except Exception as e:
@@ -213,7 +213,7 @@ def refresh():
 def get_current_user():
     """Get current user information"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         client = get_supabase_client()
         resp = client.table('users').select('id, username, email, role, is_active, created_at, last_login').eq('id', user_id).limit(1).execute()
         recs = getattr(resp, 'data', []) or []
